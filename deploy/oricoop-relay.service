@@ -1,0 +1,37 @@
+# /etc/systemd/system/oricoop-relay.service
+# Template. Paths assume the layout in AGENTS.md: .NET at /usr/bin/dotnet (distro package) or
+# /opt/oricoop-relay/dotnet/dotnet (dotnet-install.sh), app in /opt/oricoop-relay/app.
+# Change the port in ExecStart if you do not use 47020 (and open that port in the firewall).
+[Unit]
+Description=OriCoop relay server (UDP room-code relay for the OriCoop mod)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dotnet /opt/oricoop-relay/app/RelayServer.dll 47020
+WorkingDirectory=/opt/oricoop-relay/app
+# A throwaway system user; no login, no home.
+DynamicUser=yes
+# Player log: /var/log/oricoop-relay/players-YYYY-MM-DD.log (the server reads LOGS_DIRECTORY).
+LogsDirectory=oricoop-relay
+# Optional settings and secrets (Steam Web API key). Root-only file, chmod 600. "-" = may be missing.
+EnvironmentFile=-/etc/oricoop-relay.env
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Restart=always
+RestartSec=3
+# Hardening. Outgoing HTTPS stays allowed (Steam name lookups).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+LockPersonality=yes
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target
