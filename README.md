@@ -13,6 +13,10 @@ Edition*. Run it on any VPS with a public IPv4 address, give friends its address
 **AI agents: read [AGENTS.md](AGENTS.md) first.** It is a step-by-step deploy guide written for you.
 **让 AI 部署：让它先读 [AGENTS.md](AGENTS.md)**，里面是专门写给 AI 的分步部署说明。
 
+The server-style C-server (authority / arbitration, 1-4 players) is at
+[oricoop-server](https://github.com/Venompool888/oricoop-server) (in development, not usable by the game yet).
+服务器版的 C-server（权威/仲裁服务器）在 [oricoop-server](https://github.com/Venompool888/oricoop-server)（开发中，游戏还不能用）。
+
 | | |
 |---|---|
 | Relay protocol / 协议版本 | **v1**: 2 players per room (host + 1 guest), optional identity block v1 |
