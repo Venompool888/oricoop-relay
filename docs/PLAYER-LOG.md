@@ -3,13 +3,13 @@
 The relay server writes one line when a player creates or joins a room and one when they leave.
 
 ```
-PLAYER JOIN 2026-11-16T03:21:07Z room=K7QX2M role=guest steamid=76561198000000001 ip=203.0.113.7:51234 name="Example" client_name="Example" profile=https://steamcommunity.com/profiles/76561198000000001
-PLAYER LEAVE 2026-11-16T03:58:40Z room=K7QX2M role=guest steamid=76561198000000001 ip=203.0.113.7:51234 name="Example" client_name="Example" profile=https://steamcommunity.com/profiles/76561198000000001 duration=00:37:33 reason="left"
+PLAYER JOIN 2026-11-16T03:21:07Z room=K7QX2M role=guest steamid=76561198000000001 ip=203.0.113.7:51234 name="Example" client_name="Example" profile=https://steamcommunity.com/profiles/76561198000000001 seat=2
+PLAYER LEAVE 2026-11-16T03:58:40Z room=K7QX2M role=guest steamid=76561198000000001 ip=203.0.113.7:51234 name="Example" client_name="Example" profile=https://steamcommunity.com/profiles/76561198000000001 duration=00:37:33 reason="left" seat=2
 ```
 
-- Time is UTC. `role` is `host` or `guest`. `ip` is the UDP source address the relay saw (after NAT).
-- `steamid`: the SteamID64 the client sent. `0` means Steam was not running on that PC; `unknown` means an old client
-  that sends no identity. **The client reports its SteamID itself, so it can be forged.** Treat it as a hint, not proof.
+- Time is UTC. `role` is `host` or `guest`; `seat` is 1 for the host and 2-4 for guests (relay protocol v2). `ip` is the UDP source address the relay saw (after NAT).
+- `steamid`: the SteamID64 the client sent. `0` means Steam was not running on that PC; `unknown` means a client
+  that sends no optional identity. **The client reports its SteamID itself, so it can be forged.** Treat it as a hint, not proof.
 - `name`: the Steam name the server looked up for that ID (`-` if the lookup failed or is off). `client_name`: the name
   the client sent (its Steam name, or `ORICOOP_PLAYER_NAME`). Names are cut to 64 characters; quotes and control
   characters become `?`.
@@ -21,7 +21,9 @@ PLAYER LEAVE 2026-11-16T03:58:40Z room=K7QX2M role=guest steamid=765611980000000
 
 Clients append an identity block to `HostRoom` (after byte 7) and `JoinRoom` (after byte 9):
 `'I'` (0x49), version 1, SteamID64 (8 bytes, little endian), name length (1 byte, at most 32), UTF-8 name.
-Old servers ignore the extra bytes; old clients send none and are logged as `unknown`.
+Relay protocol v2 uses magic `0x534F` (wire bytes `4F 53`); the identity version stays 1.
+V2 clients may omit identity and are logged as `unknown`. V1 packets are refused with
+`relay protocol v2 required`. The complete v2 packet table is at the top of `server/RelayServer.cs`.
 
 ## Steam name lookup
 

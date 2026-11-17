@@ -5,14 +5,16 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace OriCoop.Net
+using OriCoop.Net;
+
+namespace OriCoop.Relay
 {
-    // A datagram transport that meets the peer through a small rendezvous server.
-    // It relays until a local hole-punch succeeds, then sends marked raw datagrams.
-    // All work happens in SendTo/Receive/Update on the caller's thread.
-    public sealed class RelayTransport : IDatagramTransport
+    // Test-only v2 transport for the original two-peer reliability/direct/reconnect checks.
+    // Kept here so server tests do not depend on the separately maintained game relay client.
+    // One guest at a time; raw RelaySeatTest exercises the multi-seat wire contract.
+    public sealed class RelayTestTransport : IDatagramTransport
     {
-        private const ushort Magic = 0x524F;
+        private const ushort Magic = 0x534F;
         private const byte OpHostRoom = 1;
         private const byte OpJoinRoom = 2;
         private const byte OpRoomCreated = 3;
@@ -59,6 +61,7 @@ namespace OriCoop.Net
         private string roomCode;
         private string error;
         private EndPoint peer;
+        private byte peerSeat = 2;
         private bool ready;
         private bool direct;
         private bool forceRelay;
@@ -74,7 +77,7 @@ namespace OriCoop.Net
         private double lastDirectReceive;
         private double lastServerReceive;
 
-        private RelayTransport(EndPoint server, bool hosting, string code)
+        private RelayTestTransport(EndPoint server, bool hosting, string code)
         {
             if (server == null) throw new ArgumentNullException("server");
             this.server = server;
@@ -93,17 +96,17 @@ namespace OriCoop.Net
             Update();
         }
 
-        public static RelayTransport Host(EndPoint server)
+        public static RelayTestTransport Host(EndPoint server)
         {
-            return new RelayTransport(server, true, null);
+            return new RelayTestTransport(server, true, null);
         }
 
-        public static RelayTransport Join(EndPoint server, string code)
+        public static RelayTestTransport Join(EndPoint server, string code)
         {
             if (code == null) throw new ArgumentNullException("code");
             code = code.Trim().ToUpperInvariant();
             if (code.Length != 6) throw new ArgumentException("room code must be 6 characters", "code");
-            return new RelayTransport(server, false, code);
+            return new RelayTestTransport(server, false, code);
         }
 
         public string RoomCode { get { return roomCode; } }
@@ -204,11 +207,12 @@ namespace OriCoop.Net
                 return;
             }
             if (length > MaxRelayPayload) return;
-            byte[] packet = new byte[11 + length];
+            byte[] packet = new byte[12 + length];
             WriteMagicOp(packet, OpRelay);
             WriteCode(packet, 3, roomCode);
-            WriteU16(packet, 9, (ushort)length);
-            Buffer.BlockCopy(data, offset, packet, 11, length);
+            packet[9] = hosting ? peerSeat : (byte)1;
+            WriteU16(packet, 10, (ushort)length);
+            Buffer.BlockCopy(data, offset, packet, 12, length);
             SendRaw(packet, server);
         }
 
@@ -279,9 +283,9 @@ namespace OriCoop.Net
                     lastServerReceive = Now;
                     return;
                 case OpJoined:
-                    if (hosting || length < 15) return;
+                    if (hosting || length < 16) return;
                     if (!CodeEquals(ReadCode(data, 3))) return;
-                    EndPoint hostEndpoint = ReadEndpoint(data, 9);
+                    EndPoint hostEndpoint = ReadEndpoint(data, 10);
                     if (hostEndpoint == null) return;
                     lastServerReceive = Now;
                     if (!ready) { ready = true; error = null; }
@@ -294,9 +298,10 @@ namespace OriCoop.Net
                     }
                     return;
                 case OpPeerJoined:
-                    if (!hosting || length < 15) return;
+                    if (!hosting || length < 16) return;
                     if (!CodeEquals(ReadCode(data, 3))) return;
-                    EndPoint guestEndpoint = ReadEndpoint(data, 9);
+                    peerSeat = data[9];
+                    EndPoint guestEndpoint = ReadEndpoint(data, 10);
                     if (guestEndpoint == null) return;
                     lastServerReceive = Now;
                     if (peer == null || !peer.Equals(guestEndpoint))
@@ -315,11 +320,12 @@ namespace OriCoop.Net
                     lastServerReceive = Now;
                     return;
                 case OpRelayed:
-                    if (length < 5) return;
-                    int size = ReadU16(data, 3);
-                    if (size > length - 5) return;
+                    if (length < 6) return;
+                    if (data[3] != (hosting ? peerSeat : (byte)1)) return;
+                    int size = ReadU16(data, 4);
+                    if (size != length - 6) return;
                     byte[] payload = new byte[size];
-                    Buffer.BlockCopy(data, 5, payload, 0, size);
+                    Buffer.BlockCopy(data, 6, payload, 0, size);
                     incoming.Enqueue(payload);
                     LogFirstPayload("relay", size);
                     lastServerReceive = Now;
@@ -328,8 +334,8 @@ namespace OriCoop.Net
                     lastServerReceive = Now;
                     return;
                 case OpPeerLeft:
-                    if (!hosting) return;
-                    if (length >= 9 && !CodeEquals(ReadCode(data, 3))) return;
+                    if (!hosting || length != 10 || data[9] != peerSeat) return;
+                    if (!CodeEquals(ReadCode(data, 3))) return;
                     if (peer != null) LogState("PeerLeft guest=" + peer);
                     SetDirect(false, "peer left");
                     peer = null;

@@ -1,3 +1,25 @@
+// Relay protocol v2 (incompatible with v1). Integers are little endian; offsets are zero-based.
+// Header H = u16 magic 0x534F (bytes 4F 53, bumped from v1 4F 52), u8 op. No extra version byte.
+// Packet / op          Fields after H                                      Bytes
+// HostRoom / 1         nonce:u32, optional identity                         7 + identity
+// JoinRoom / 2         code:ASCII[6], optional identity                     9 + identity
+// RoomCreated / 3      nonce:u32, code:ASCII[6]                             13
+// Joined / 4           code:ASCII[6], seat:u8, host IPv4[4], port:u16         16
+// PeerJoined / 5       code:ASCII[6], seat:u8, guest IPv4[4], port:u16        16
+// JoinFailed / 6       utf8Length:u8, UTF-8 reason                           4 + length
+// Relay / 7            code:ASCII[6], target:u8, size:u16, payload[size]      12 + size
+// Relayed / 8          source:u8, size:u16, payload[size]                    6 + size
+// KeepAlive / 9        code:ASCII[6]                                        9
+// PeerLeft / 10        code:ASCII[6], departed seat:u8                       10
+// KeepAliveAck / 13    (empty)                                              3
+// LeaveRoom / 14       code:ASCII[6]                                        9
+// Host is seat 1; guests use 2..4. Guests MUST target 1; host MUST target 2..4 (no broadcast).
+// Joined seat is the guest's seat; PeerJoined/PeerLeft seat identifies that guest on the host.
+// Relayed always has a source byte: 2..4 to host, 1 to guest. Endpoint starts at offset 10.
+// Identity stays 'I', u8 version 1, u64 SteamID, u8 name length <=32, UTF-8 name (offset 7/9).
+// v1 requests get JoinFailed with v1 magic and reason "relay protocol v2 required"; no room mutation.
+// Direct punch/data remain peer-to-peer; the server supplies the host/guest endpoint for EACH seat.
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,7 +32,9 @@ namespace OriCoop.Relay
 {
     internal static class RelayProtocol
     {
-        internal const ushort Magic = 0x524F;
+        internal const byte Version = 2;
+        internal const ushort Magic = 0x534F;
+        internal const ushort V1Magic = 0x524F;
         internal const byte HostRoom = 1;
         internal const byte JoinRoom = 2;
         internal const byte RoomCreated = 3;
@@ -109,13 +133,14 @@ namespace OriCoop.Relay
             return packet;
         }
 
-        internal static byte[] Relay(string code, byte[] payload, int offset, int length)
+        internal static byte[] Relay(string code, byte[] payload, int offset, int length, byte targetSeat = 1)
         {
-            byte[] packet = new byte[11 + length];
+            byte[] packet = new byte[12 + length];
             WriteMagicOp(packet, RelayProtocol.Relay);
             WriteCode(packet, 3, code);
-            WriteU16(packet, 9, (ushort)length);
-            Buffer.BlockCopy(payload, offset, packet, 11, length);
+            packet[9] = targetSeat;
+            WriteU16(packet, 10, (ushort)length);
+            Buffer.BlockCopy(payload, offset, packet, 12, length);
             return packet;
         }
     }
@@ -140,15 +165,15 @@ namespace OriCoop.Relay
         {
             internal string Code;
             internal EndPoint Host;
-            internal EndPoint Guest;
+            internal readonly EndPoint[] Guest = new EndPoint[3];
             internal uint HostNonce;
             internal double HostSeen;
-            internal double GuestSeen;
+            internal readonly double[] GuestSeen = new double[3];
             // Admin log only (PlayerLog); never affects routing.
             internal PlayerIdentity HostId = PlayerIdentity.Unknown;
-            internal PlayerIdentity GuestId = PlayerIdentity.Unknown;
+            internal readonly PlayerIdentity[] GuestId = new PlayerIdentity[3];
             internal DateTime HostJoinedUtc;
-            internal DateTime GuestJoinedUtc;
+            internal readonly DateTime[] GuestJoinedUtc = new DateTime[3];
         }
 
         private sealed class RateLimit
@@ -219,8 +244,14 @@ namespace OriCoop.Relay
         private void Handle(int length, EndPoint from)
         {
             if (length < 3) return;
-            if (RelayWire.ReadU16(buffer, 0) != RelayProtocol.Magic) return;
+            ushort magic = RelayWire.ReadU16(buffer, 0);
+            if (magic != RelayProtocol.Magic && magic != RelayProtocol.V1Magic) return;
             if (!AllowPacket(from)) return;
+            if (magic == RelayProtocol.V1Magic)
+            {
+                SendJoinFailed(from, "relay protocol v2 required", RelayProtocol.V1Magic);
+                return;
+            }
             switch (buffer[2])
             {
                 case RelayProtocol.HostRoom: HandleHostRoom(length, from); break;
@@ -284,7 +315,7 @@ namespace OriCoop.Relay
             roomsByCode.Add(room.Code, room);
             roomsByHost.Add(key, room);
             Log("room " + room.Code + " created host=" + EndPointText(from));
-            if (Players != null) Players.Join(room.Code, "host", room.HostId, from);
+            if (Players != null) Players.Join(room.Code, "host", 1, room.HostId, from);
             SendRoomCreated(from, nonce, room.Code);
         }
 
@@ -304,63 +335,80 @@ namespace OriCoop.Relay
                 SendJoinFailed(from, "room full");
                 return;
             }
-            if (room.Guest != null)
+            int slot = GuestSlot(room, key);
+            if (slot >= 0)
             {
-                if (EndPointKey(room.Guest) == key)
-                {
-                    // Lost reply: repeat both rendezvous replies.
-                    room.GuestSeen = Now;
-                    SendJoined(from, room.Code, room.Host);
-                    SendPeerJoined(room.Host, room.Code, from);
-                    return;
-                }
-                // A guest that crashed or lost its network never sends LeaveRoom. Guests keep the server alive
-                // every 5 s, so after GuestReplaceSeconds of silence the slot goes to the new joiner (same code).
-                if (Now - room.GuestSeen < GuestReplaceSeconds)
+                // Lost reply: repeat both rendezvous replies without changing identity or seat.
+                room.GuestSeen[slot] = Now;
+                SendJoined(from, room.Code, (byte)(slot + 2), room.Host);
+                SendPeerJoined(room.Host, room.Code, (byte)(slot + 2), from);
+                return;
+            }
+            for (int i = 0; i < room.Guest.Length; i++)
+                if (room.Guest[i] == null) { slot = i; break; }
+            if (slot < 0)
+            {
+                // Preserve crash recovery when the room is full, replacing the lowest silent seat.
+                for (int i = 0; i < room.Guest.Length; i++)
+                    if (Now - room.GuestSeen[i] >= GuestReplaceSeconds) { slot = i; break; }
+                if (slot < 0)
                 {
                     SendJoinFailed(from, "room full");
                     return;
                 }
-                Log("room " + room.Code + " silent guest replaced");
-                GuestLeft(room, "silent guest replaced");
-                SendPeerLeft(room.Host, room.Code);
+                GuestLeft(room, slot, "silent guest replaced");
             }
-            room.Guest = from;
-            room.GuestSeen = Now;
-            room.GuestId = RelayIdentityWire.Parse(buffer, 9, length);
-            room.GuestJoinedUtc = DateTime.UtcNow;
-            SendJoined(from, room.Code, room.Host);
-            SendPeerJoined(room.Host, room.Code, from);
-            Log("room " + room.Code + " joined guest=" + EndPointText(from));
-            if (Players != null) Players.Join(room.Code, "guest", room.GuestId, from);
+            byte seat = (byte)(slot + 2);
+            room.Guest[slot] = from;
+            room.GuestSeen[slot] = Now;
+            room.GuestId[slot] = RelayIdentityWire.Parse(buffer, 9, length);
+            room.GuestJoinedUtc[slot] = DateTime.UtcNow;
+            SendJoined(from, room.Code, seat, room.Host);
+            SendPeerJoined(room.Host, room.Code, seat, from);
+            Log("room " + room.Code + " joined guest=" + EndPointText(from) + " seat=" + seat);
+            if (Players != null) Players.Join(room.Code, "guest", seat, room.GuestId[slot], from);
+        }
+
+        private static int GuestSlot(Room room, string key)
+        {
+            for (int i = 0; i < room.Guest.Length; i++)
+                if (room.Guest[i] != null && EndPointKey(room.Guest[i]) == key) return i;
+            return -1;
         }
 
         private void HandleRelay(int length, EndPoint from)
         {
-            if (length < 11) return;
+            if (length < 12) return;
             string code = RelayWire.ReadCode(buffer, 3);
-            int size = RelayWire.ReadU16(buffer, 9);
-            if (size > MaxPayload || length != 11 + size) return;
+            byte targetSeat = buffer[9];
+            int size = RelayWire.ReadU16(buffer, 10);
+            if (size > MaxPayload || length != 12 + size) return;
             Room room;
             if (!roomsByCode.TryGetValue(code, out room)) return;
             string key = EndPointKey(from);
-            EndPoint target = null;
+            EndPoint target;
+            byte sourceSeat;
             if (EndPointKey(room.Host) == key)
             {
+                if (targetSeat < 2 || targetSeat > 4) return;
                 room.HostSeen = Now;
-                target = room.Guest;
+                sourceSeat = 1;
+                target = room.Guest[targetSeat - 2];
             }
-            else if (room.Guest != null && EndPointKey(room.Guest) == key)
+            else
             {
-                room.GuestSeen = Now;
+                int slot = GuestSlot(room, key);
+                if (slot < 0 || targetSeat != 1) return;
+                room.GuestSeen[slot] = Now;
+                sourceSeat = (byte)(slot + 2);
                 target = room.Host;
             }
-            else return;
             if (target == null) return;
-            byte[] packet = new byte[5 + size];
+            byte[] packet = new byte[6 + size];
             RelayWire.WriteMagicOp(packet, RelayProtocol.Relayed);
-            RelayWire.WriteU16(packet, 3, (ushort)size);
-            Buffer.BlockCopy(buffer, 11, packet, 5, size);
+            packet[3] = sourceSeat;
+            RelayWire.WriteU16(packet, 4, (ushort)size);
+            Buffer.BlockCopy(buffer, 12, packet, 6, size);
             Send(target, packet);
         }
 
@@ -372,8 +420,12 @@ namespace OriCoop.Relay
             if (!roomsByCode.TryGetValue(code, out room)) return;
             string key = EndPointKey(from);
             if (EndPointKey(room.Host) == key) room.HostSeen = Now;
-            else if (room.Guest != null && EndPointKey(room.Guest) == key) room.GuestSeen = Now;
-            else return;
+            else
+            {
+                int slot = GuestSlot(room, key);
+                if (slot < 0) return;
+                room.GuestSeen[slot] = Now;
+            }
             byte[] ack = new byte[3];
             RelayWire.WriteMagicOp(ack, RelayProtocol.KeepAliveAck);
             Send(from, ack);
@@ -384,44 +436,44 @@ namespace OriCoop.Relay
             if (length != 9) return;
             Room room;
             if (!roomsByCode.TryGetValue(RelayWire.ReadCode(buffer, 3), out room)) return;
-            // Only the current guest can free its slot. A delayed leave from an old
-            // endpoint must not evict a replacement guest, or close the host's room.
-            if (room.Guest == null || EndPointKey(room.Guest) != EndPointKey(from)) return;
-            GuestLeft(room, "left");
-            room.Guest = null;
-            SendPeerLeft(room.Host, room.Code);
-            Log("room " + room.Code + " guest left");
+            // A delayed leave cannot evict a replacement at a different endpoint.
+            int slot = GuestSlot(room, EndPointKey(from));
+            if (slot < 0) return;
+            GuestLeft(room, slot, "left");
         }
 
         private void Expire(double now)
         {
             List<Room> expired = new List<Room>();
-            List<Room> guestGone = new List<Room>();
             foreach (Room room in roomsByCode.Values)
             {
                 if (now - room.HostSeen >= RoomTimeoutSeconds) expired.Add(room);
-                else if (room.Guest != null && now - room.GuestSeen >= GuestTimeoutSeconds) guestGone.Add(room);
-            }
-            foreach (Room room in guestGone)
-            {
-                GuestLeft(room, "timed out");
-                room.Guest = null;
-                SendPeerLeft(room.Host, room.Code);
-                Log("room " + room.Code + " guest timed out");
+                else
+                    for (int i = 0; i < room.Guest.Length; i++)
+                        if (room.Guest[i] != null && now - room.GuestSeen[i] >= GuestTimeoutSeconds)
+                            GuestLeft(room, i, "timed out");
             }
             foreach (Room room in expired) RemoveRoom(room, "host timed out");
         }
 
-        private void GuestLeft(Room room, string why)
+        private void GuestLeft(Room room, int slot, string why)
         {
-            if (Players == null || room.Guest == null) return;
-            Players.Leave(room.Code, "guest", room.GuestId, room.Guest, room.GuestJoinedUtc, why);
+            if (room.Guest[slot] == null) return;
+            byte seat = (byte)(slot + 2);
+            if (Players != null) Players.Leave(room.Code, "guest", seat, room.GuestId[slot],
+                room.Guest[slot], room.GuestJoinedUtc[slot], why);
+            room.Guest[slot] = null;
+            room.GuestId[slot] = PlayerIdentity.Unknown;
+            room.GuestJoinedUtc[slot] = default(DateTime);
+            room.GuestSeen[slot] = 0;
+            SendPeerLeft(room.Host, room.Code, seat);
+            Log("room " + room.Code + " guest seat=" + seat + " " + why);
         }
 
         private void RemoveRoom(Room room, string why)
         {
-            GuestLeft(room, "room closed (" + why + ")");
-            if (Players != null) Players.Leave(room.Code, "host", room.HostId, room.Host, room.HostJoinedUtc, why);
+            for (int i = 0; i < room.Guest.Length; i++) GuestLeft(room, i, "room closed (" + why + ")");
+            if (Players != null) Players.Leave(room.Code, "host", 1, room.HostId, room.Host, room.HostJoinedUtc, why);
             roomsByCode.Remove(room.Code);
             string key = EndPointKey(room.Host);
             Room mapped;
@@ -451,39 +503,43 @@ namespace OriCoop.Relay
             Send(to, packet);
         }
 
-        private void SendJoined(EndPoint to, string code, EndPoint host)
+        private void SendJoined(EndPoint to, string code, byte seat, EndPoint host)
         {
-            byte[] packet = new byte[15];
+            byte[] packet = new byte[16];
             RelayWire.WriteMagicOp(packet, RelayProtocol.Joined);
             RelayWire.WriteCode(packet, 3, code);
-            RelayWire.WriteEndpoint(packet, 9, host);
+            packet[9] = seat;
+            RelayWire.WriteEndpoint(packet, 10, host);
             Send(to, packet);
         }
 
-        private void SendPeerJoined(EndPoint to, string code, EndPoint guest)
+        private void SendPeerJoined(EndPoint to, string code, byte seat, EndPoint guest)
         {
-            byte[] packet = new byte[15];
+            byte[] packet = new byte[16];
             RelayWire.WriteMagicOp(packet, RelayProtocol.PeerJoined);
             RelayWire.WriteCode(packet, 3, code);
-            RelayWire.WriteEndpoint(packet, 9, guest);
+            packet[9] = seat;
+            RelayWire.WriteEndpoint(packet, 10, guest);
             Send(to, packet);
         }
 
-        private void SendJoinFailed(EndPoint to, string reason)
+        private void SendJoinFailed(EndPoint to, string reason, ushort magic = RelayProtocol.Magic)
         {
             byte[] text = Encoding.UTF8.GetBytes(reason);
             byte[] packet = new byte[4 + text.Length];
             RelayWire.WriteMagicOp(packet, RelayProtocol.JoinFailed);
+            RelayWire.WriteU16(packet, 0, magic);
             packet[3] = (byte)text.Length;
             Buffer.BlockCopy(text, 0, packet, 4, text.Length);
             Send(to, packet);
         }
 
-        private void SendPeerLeft(EndPoint to, string code)
+        private void SendPeerLeft(EndPoint to, string code, byte seat)
         {
-            byte[] packet = new byte[9];
+            byte[] packet = new byte[10];
             RelayWire.WriteMagicOp(packet, RelayProtocol.PeerLeft);
             RelayWire.WriteCode(packet, 3, code);
+            packet[9] = seat;
             Send(to, packet);
         }
 

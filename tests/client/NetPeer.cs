@@ -42,6 +42,7 @@ namespace OriCoop.Net
         private readonly Random random = new Random();
         private readonly IDatagramTransport transport;
         private readonly Stopwatch clock = Stopwatch.StartNew();
+        private readonly Func<double> nowMs;
         private readonly NetStats stats = new NetStats();
         private readonly NetSim sim = new NetSim();
         private readonly byte[] receiveBuffer = new byte[65536];
@@ -122,15 +123,21 @@ namespace OriCoop.Net
             this.transport = transport;
         }
 
+        internal NetPeer(IDatagramTransport transport, Func<double> nowMs) : this(transport)
+        {
+            this.nowMs = nowMs;
+        }
+
         public PeerState State { get { return state; } }
         public EndPoint Remote { get { return remote; } }
         public string DisconnectReason { get { return disconnectReason; } }
         public NetStats Stats { get { return stats; } }
         public NetSim Sim { get { return sim; } }
-        public double NowMs { get { return clock.Elapsed.TotalMilliseconds; } }
+        public double NowMs { get { return nowMs == null ? clock.Elapsed.TotalMilliseconds : nowMs(); } }
         // Zero uses ProtocolVersion; exposed only to exercise version rejection.
         public ushort ProtocolVersionOverride { get; set; }
-        public int TimeoutMs = 5000;
+        // 10 s: Wi-Fi roaming / router hiccups of ~5-8 s should not drop the link (lag test ②); NetHud shows a hint after 1 s of silence.
+        public int TimeoutMs = 10000;
         public int KeepaliveMs = 200;
         public event Action Connected;
         public event Action<string> Disconnected;
@@ -369,7 +376,9 @@ namespace OriCoop.Net
             inFlight.RemoveAll(delegate(Fragment f) { return f.Acked; });
             while (inFlight.Count < Window && waiting.Count != 0) inFlight.Add(waiting.Dequeue());
             double now = NowMs;
-            double resendAfter = Math.Min(1000, Math.Max(60, 2 * stats.RttMs + 2 * stats.JitterMs));
+            // TCP-style RTO: RTT + 4 x mean deviation (+20 ms for ack/flush delay). Was 2xRTT+2xjitter, which cost
+            // ~1 s per lost reliable packet at 400 ms RTT (lag test ④). Receivers drop duplicates, so early resends are safe.
+            double resendAfter = Math.Min(1000, Math.Max(50, stats.RttMs + 4 * stats.JitterMs + 20));
             // Keep jittered reliable bursts inside the 32-bit ack history. The fragment
             // window is still 256; several small fragments can share one packet.
             packetWindow.RemoveAll(delegate(SentPacket p) { return p.Acked || now - p.Time >= resendAfter; });

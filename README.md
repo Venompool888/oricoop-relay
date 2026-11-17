@@ -19,8 +19,8 @@ The server-style C-server (authority / arbitration, 1-4 players) is at
 
 | | |
 |---|---|
-| Relay protocol / 协议版本 | **v1**: 2 players per room (host + 1 guest), optional identity block v1 |
-| Matching mod / 对应 mod | Compatible with OriCoop **0.2.0** (ad8f4bc and later 2-player builds). Builds before the player log send no identity and are logged as `steamid=unknown`. A later 4-player version will need relay protocol v2. / 兼容 OriCoop 0.2.0（ad8f4bc 及之后的 2 人版本）；以后的 4 人版本要用协议 v2。 |
+| Relay protocol / 协议版本 | **v2**: up to 4 players per room (host = seat 1, guests = seats 2-4), seat-routed packets, magic `4F 53`, optional identity block v1. v2 does not talk to v1. / 协议 v2：每房最多 4 人（主机座位 1，客人 2–4），按座位转发；与 v1 不互通 |
+| Matching mod / 对应 mod | OriCoop release **v0.2.0-2026.11.17** (same tag in the client repo and in oricoop-server). For the older 2-player OriCoop 0.2.0 (ad8f4bc), use tag [`v1-oricoop-0.2.0`](https://github.com/Venompool888/oricoop-relay/tree/v1-oricoop-0.2.0). / 对应 OriCoop 发布版 **v0.2.0-2026.11.17**（客户端仓库和 oricoop-server 用同一个标签）；旧的 2 人版 0.2.0（ad8f4bc）请用标签 `v1-oricoop-0.2.0`。 |
 | Default port / 默认端口 | **UDP 47020** (TCP not used / 不用 TCP) |
 | Runtime / 运行环境 | .NET 8 (Linux, Docker) or .NET Framework 4.x (Windows `.exe`) |
 | Resources / 资源 | 1 vCPU, 512 MB RAM, about 0.5 Mbit/s per playing pair |
@@ -31,7 +31,7 @@ The server-style C-server (authority / arbitration, 1-4 players) is at
 
 ### What it does
 
-- The host asks the relay for a room and gets a 6-character code; the friend joins with that code.
+- The host asks the relay for a room and gets a 6-character code; up to 3 friends join with that code.
 - The relay first helps the two games connect directly (UDP hole punching). If that fails, it forwards the game
   packets between them. It only sees opaque packets; it stores nothing about the game.
 - Rooms close by themselves 30 s after the host goes quiet. At most 1000 rooms, 200 packets/s per address.
@@ -121,7 +121,7 @@ License: [MIT](LICENSE).
 
 ### 它做什么
 
-- 主机向中继要一个房间，拿到 6 位房间码；朋友输入房间码加入。
+- 主机向中继要一个房间，拿到 6 位房间码；最多 3 个朋友输入房间码加入。
 - 中继先帮两边的游戏直接连上（UDP 打洞）；连不上就由服务器转发游戏数据。服务器只转发看不懂的数据包，不保存任何游戏内容。
 - 主机 30 秒没有动静，房间自动关闭。最多 1000 个房间，每个地址每秒最多 200 个包。
 - 会写**玩家日志**（见下面的隐私说明）。
@@ -182,7 +182,7 @@ python3 tools/probe.py <服务器IP或域名> 47020
 
 ### 协议版本
 
-当前是**中继协议 v1**：每个房间 2 人（主机 + 1 个客人），兼容 OriCoop mod **0.2.0**（ad8f4bc 及之后的 2 人版本）。以后的 4 人联机版本会用不兼容的
-协议 v2，到时服务器和 mod 要一起升级；本页上方的表格会写明对应关系。
+当前是**中继协议 v2**：每个房间最多 4 人（主机 + 最多 3 个客人），对应 OriCoop 发布版 **v0.2.0-2026.11.17**。旧的 2 人版客户端（OriCoop 0.2.0，ad8f4bc）只能连
+协议 v1 的服务器，请用标签 `v1-oricoop-0.2.0` 部署。以后服务器和客户端仓库始终同步发布、打同一个标签。
 
 许可证：[MIT](LICENSE)。

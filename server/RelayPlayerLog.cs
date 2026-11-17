@@ -316,33 +316,33 @@ namespace OriCoop.Relay
             return log;
         }
 
-        public void Join(string room, string role, PlayerIdentity id, EndPoint from)
+        public void Join(string room, string role, int seat, PlayerIdentity id, EndPoint from)
         {
             if (id == null) id = PlayerIdentity.Unknown;
             DateTime at = UtcNow();
             string cached;
             if (!id.Known || id.SteamId == 0 || resolver == null)
             {
-                Write(FormatJoin(at, room, role, id, from, null));
+                Write(FormatJoin(at, room, role, seat, id, from, null));
                 return;
             }
             if (resolver.TryGetCached(id.SteamId, out cached))
             {
-                Write(FormatJoin(at, room, role, id, from, cached));
+                Write(FormatJoin(at, room, role, seat, id, from, cached));
                 return;
             }
             PlayerIdentity copy = id;
-            bool queued = resolver.Resolve(id.SteamId, delegate(string name) { Write(FormatJoin(at, room, role, copy, from, name)); });
-            if (!queued) Write(FormatJoin(at, room, role, id, from, null));
+            bool queued = resolver.Resolve(id.SteamId, delegate(string name) { Write(FormatJoin(at, room, role, seat, copy, from, name)); });
+            if (!queued) Write(FormatJoin(at, room, role, seat, id, from, null));
         }
 
-        public void Leave(string room, string role, PlayerIdentity id, EndPoint from, DateTime joinedUtc, string reason)
+        public void Leave(string room, string role, int seat, PlayerIdentity id, EndPoint from, DateTime joinedUtc, string reason)
         {
             if (id == null) id = PlayerIdentity.Unknown;
             DateTime at = UtcNow();
             string name = null;
             if (resolver != null && id.Known && id.SteamId != 0) resolver.TryGetCached(id.SteamId, out name);
-            Write(FormatLeave(at, room, role, id, from, name, at - joinedUtc, reason));
+            Write(FormatLeave(at, room, role, seat, id, from, name, at - joinedUtc, reason));
         }
 
         public static string ProfileUrl(ulong steamId)
@@ -350,13 +350,14 @@ namespace OriCoop.Relay
             return ProfileUrlPrefix + steamId.ToString(CultureInfo.InvariantCulture);
         }
 
-        public static string FormatJoin(DateTime utc, string room, string role, PlayerIdentity id, EndPoint from, string steamName)
+        public static string FormatJoin(DateTime utc, string room, string role, int seat, PlayerIdentity id, EndPoint from, string steamName)
         {
             StringBuilder sb = Begin("JOIN", utc, room, role, id, from, steamName);
+            sb.Append(" seat=").Append(seat.ToString(CultureInfo.InvariantCulture));
             return sb.ToString();
         }
 
-        public static string FormatLeave(DateTime utc, string room, string role, PlayerIdentity id, EndPoint from,
+        public static string FormatLeave(DateTime utc, string room, string role, int seat, PlayerIdentity id, EndPoint from,
             string steamName, TimeSpan duration, string reason)
         {
             StringBuilder sb = Begin("LEAVE", utc, room, role, id, from, steamName);
@@ -365,6 +366,7 @@ namespace OriCoop.Relay
                 .Append(':').Append(duration.Minutes.ToString("00", CultureInfo.InvariantCulture))
                 .Append(':').Append(duration.Seconds.ToString("00", CultureInfo.InvariantCulture));
             sb.Append(" reason=").Append(Quote(reason));
+            sb.Append(" seat=").Append(seat.ToString(CultureInfo.InvariantCulture));
             return sb.ToString();
         }
 

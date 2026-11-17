@@ -11,8 +11,8 @@ import os
 import socket
 import sys
 
-MAGIC = b"\x4f\x52"  # 0x524F, little endian
-HOST_ROOM, ROOM_CREATED = 1, 3
+MAGIC = b"\x4f\x53"  # relay protocol v2: 0x534F, little endian (v1 was 4F 52)
+HOST_ROOM, ROOM_CREATED, JOIN_FAILED = 1, 3, 6
 
 
 def main():
@@ -34,8 +34,11 @@ def main():
         except (socket.timeout, ConnectionResetError):
             continue  # ConnectionResetError: nothing listens there (ICMP port unreachable)
         if len(data) >= 13 and data[:2] == MAGIC and data[2] == ROOM_CREATED and data[3:7] == nonce:
-            print("OK relay %s:%d answered, test room %s" % (host, port, data[7:13].decode("ascii")))
+            print("OK relay %s:%d answered (protocol v2), test room %s" % (host, port, data[7:13].decode("ascii")))
             return 0
+        if len(data) >= 3 and data[:2] == b"\x4f\x52":
+            print("OLD relay %s:%d answers relay protocol v1 only; current OriCoop clients need v2. Update the server." % (host, port))
+            return 1
     print("FAIL no answer from %s:%d (UDP). Check the service, the OS firewall and the cloud security group." % (host, port))
     return 1
 

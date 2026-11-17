@@ -5,12 +5,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using OriCoop.Net;
+using RelayTransport = OriCoop.Relay.RelayTestTransport;
 
 namespace OriCoop.Relay
 {
     public sealed class RelayTest
     {
-        private const int TotalChecks = 13;
+        private const int TotalChecks = 21;
         private static int checks;
         private static int passed;
         private static readonly Stopwatch Clock = Stopwatch.StartNew();
@@ -24,6 +25,7 @@ namespace OriCoop.Relay
             try
             {
                 mainServer = new RelayServer(0);
+                RelaySeatTest.Run(Check);
                 RunA();
                 RunB();
                 RunC();
@@ -215,15 +217,15 @@ namespace OriCoop.Relay
             EndPoint ep = new IPEndPoint(IPAddress.Parse("203.0.113.7"), 51234);
             Expect(bad, "join line",
                 "PLAYER JOIN 2026-11-16T03:21:07Z room=K7QX2M role=guest steamid=76561198000000001 ip=203.0.113.7:51234 " +
-                "name=\"Ex ?ample?\" client_name=\"Cli?ent?X\" profile=https://steamcommunity.com/profiles/76561198000000001",
-                PlayerLog.FormatJoin(t, "K7QX2M", "guest", id, ep, "Ex \"ample\t"));
+                "name=\"Ex ?ample?\" client_name=\"Cli?ent?X\" profile=https://steamcommunity.com/profiles/76561198000000001 seat=3",
+                PlayerLog.FormatJoin(t, "K7QX2M", "guest", 3, id, ep, "Ex \"ample\t"));
             Expect(bad, "leave line",
                 "PLAYER LEAVE 2026-11-16T03:21:07Z room=K7QX2M role=host steamid=unknown ip=203.0.113.7:51234 " +
-                "name=- client_name=- profile=- duration=26:03:04 reason=\"host timed out\"",
-                PlayerLog.FormatLeave(t, "K7QX2M", "host", PlayerIdentity.Unknown, ep, null,
+                "name=- client_name=- profile=- duration=26:03:04 reason=\"host timed out\" seat=1",
+                PlayerLog.FormatLeave(t, "K7QX2M", "host", 1, PlayerIdentity.Unknown, ep, null,
                     new TimeSpan(1, 2, 3, 4), "host timed out"));
             PlayerIdentity off = new PlayerIdentity(); off.Known = true;
-            string offLine = PlayerLog.FormatJoin(t, "K7QX2M", "host", off, ep, null);
+            string offLine = PlayerLog.FormatJoin(t, "K7QX2M", "host", 1, off, ep, null);
             if (offLine.IndexOf("steamid=0 ") < 0 || offLine.IndexOf("profile=-") < 0) bad.Add("steam off line: " + offLine);
             if (PlayerLog.Quote(new string('x', 100)).Length != 64 + 2 + 3) bad.Add("quote length");
             Check("k name parsing", bad.Count == 0, bad.Count == 0 ? "json, xml, error/dtd/html, line format" : String.Join("; ", bad.ToArray()));
@@ -271,7 +273,7 @@ namespace OriCoop.Relay
                 guest = null;
                 Pump(200, host);
 
-                // An old client: a plain 9-byte JoinRoom with no identity block.
+                // A v2 client without the optional identity block is logged as unknown.
                 old = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                 old.Bind(new IPEndPoint(IPAddress.Loopback, 0));
                 old.SendTo(RelayWire.JoinRoom(host.RoomCode), address);
@@ -311,7 +313,7 @@ namespace OriCoop.Relay
                 Dispose(guest); Dispose(host);
                 mainServer.Players = null;
             }
-            Check("l player log", bad.Count == 0, bad.Count == 0 ? "host/guest join with id+ip+name+profile, leave+duration, old client unknown, key not logged" : String.Join("; ", bad.ToArray()));
+            Check("l player log", bad.Count == 0, bad.Count == 0 ? "host/guest join with id+ip+name+profile, leave+duration, missing identity unknown, key not logged" : String.Join("; ", bad.ToArray()));
         }
 
         private static void Want(List<string> bad, string all, string prefix, string fragment)
@@ -341,14 +343,14 @@ namespace OriCoop.Relay
                 if (!System.IO.File.Exists(keepFile)) bad.Add("30-day-old file deleted");
                 if (!System.IO.File.Exists(other)) bad.Add("unrelated file deleted");
                 PlayerIdentity id = new PlayerIdentity(); id.Known = true; id.SteamId = 76561198000000009UL;
-                log.Join("ABCDEF", "host", id, new IPEndPoint(IPAddress.Parse("198.51.100.4"), 4000));
+                log.Join("ABCDEF", "host", 1, id, new IPEndPoint(IPAddress.Parse("198.51.100.4"), 4000));
                 string today = System.IO.Path.Combine(dir, PlayerLog.FileNameFor(DateTime.UtcNow));
                 string text = System.IO.File.Exists(today) ? System.IO.File.ReadAllText(today) : "";
                 if (text.IndexOf("steamid=76561198000000009 ip=198.51.100.4:4000") < 0) bad.Add("today's file: '" + text + "'");
                 if (console.Count != 1) bad.Add("console lines " + console.Count);
                 // The day rolls over: the next write prunes with the new date.
                 log.UtcNow = delegate { return DateTime.UtcNow.AddDays(31); };
-                log.Join("ABCDEF", "guest", id, null);
+                log.Join("ABCDEF", "guest", 2, id, null);
                 if (System.IO.File.Exists(keepFile)) bad.Add("rollover did not prune");
                 if (!System.IO.File.Exists(System.IO.Path.Combine(dir, PlayerLog.FileNameFor(DateTime.UtcNow.AddDays(31))))) bad.Add("rollover file missing");
             }
@@ -364,32 +366,40 @@ namespace OriCoop.Relay
         {
             bool ok = false;
             string detail = "";
-            RelayTransport host = null, guest = null, second = null, wrong = null;
+            RelayTransport host = null, full = null, wrong = null;
+            RelayTransport[] guests = new RelayTransport[3];
             try
             {
                 EndPoint address = ServerAddress(mainServer);
                 host = RelayTransport.Host(address);
                 bool created = Wait(3000, delegate { return host.Ready; }, host);
                 string code = host.RoomCode;
-                bool shaped = InAlphabet(code);
-                if (created && code != null)
+                bool joined = created;
+                if (created)
                 {
-                    guest = RelayTransport.Join(address, code);
-                    bool joined = Wait(3000, delegate { return guest.Ready; }, host, guest);
-                    second = RelayTransport.Join(address, code);
-                    bool full = Wait(2000, delegate { return second.Error != null; }, host, guest, second);
+                    for (int i = 0; i < guests.Length; i++)
+                    {
+                        RelayTransport guest = RelayTransport.Join(address, code);
+                        guests[i] = guest;
+                        guest.ForceRelay = true;
+                        joined &= Wait(3000, delegate { return guest.Ready; }, host, guest);
+                    }
+                    full = RelayTransport.Join(address, code);
+                    bool refused = Wait(2000, delegate { return full.Error != null; }, host, full);
                     wrong = RelayTransport.Join(address, DifferentCode(code));
-                    bool missing = Wait(2000, delegate { return wrong.Error != null; }, host, guest, second, wrong);
-                    ok = shaped && joined && full && missing &&
-                        second.Error == "room full" && wrong.Error == "no such room";
-                    detail = String.Format("code={0} shaped={1} joined={2} second='{3}' wrong='{4}'",
-                        code, shaped, joined, second.Error, wrong.Error);
+                    bool missing = Wait(2000, delegate { return wrong.Error != null; }, host, wrong);
+                    ok = InAlphabet(code) && joined && refused && missing &&
+                        full.Error == "room full" && wrong.Error == "no such room";
+                    detail = String.Format("code={0} threeGuests={1} fifthPlayer='{2}' wrong='{3}'",
+                        code, joined, full.Error, wrong.Error);
                 }
                 else detail = "host did not receive a 6-char room code";
             }
             finally
             {
-                Dispose(wrong); Dispose(second); Dispose(guest); Dispose(host);
+                Dispose(wrong); Dispose(full);
+                foreach (RelayTransport guest in guests) Dispose(guest);
+                Dispose(host);
             }
             Check("a rooms", ok, detail);
         }
@@ -608,7 +618,7 @@ namespace OriCoop.Relay
                         mainServer.Poll();
                         int length;
                         while ((length = hostSocket.Receive(buffer, out from)) > 0)
-                            if (length >= 15 && RelayWire.ReadU16(buffer, 0) == RelayProtocol.Magic &&
+                            if (length == 16 && RelayWire.ReadU16(buffer, 0) == RelayProtocol.Magic &&
                                 buffer[2] == RelayProtocol.PeerJoined)
                                 joined = true;
                         if (!joined) Thread.Sleep(1);
@@ -627,7 +637,7 @@ namespace OriCoop.Relay
                         mainServer.Poll();
                         int length;
                         while ((length = hostSocket.Receive(buffer, out from)) > 0)
-                            if (length >= 5 && RelayWire.ReadU16(buffer, 0) == RelayProtocol.Magic &&
+                            if (length >= 6 && RelayWire.ReadU16(buffer, 0) == RelayProtocol.Magic &&
                                 buffer[2] == RelayProtocol.Relayed)
                                 forwarded++;
                         Thread.Sleep(0);
@@ -653,7 +663,7 @@ namespace OriCoop.Relay
                 EndPoint address = ServerAddress(mainServer);
                 hostTransport = RelayTransport.Host(address);
                 hostTransport.ForceRelay = forceRelay;
-                NetPeer host = new NetPeer(hostTransport);
+                NetPeer host = new NetPeer(hostTransport) { TimeoutMs = 5000 };
                 host.Listen();
                 if (!Wait(3000, delegate { return hostTransport.Ready; }, hostTransport))
                 {
@@ -664,7 +674,7 @@ namespace OriCoop.Relay
                 PumpPeers(3000, host, null);
                 guestTransport = RelayTransport.Join(address, code);
                 guestTransport.ForceRelay = forceRelay;
-                NetPeer guest = new NetPeer(guestTransport);
+                NetPeer guest = new NetPeer(guestTransport) { TimeoutMs = 5000 };
                 bool ready = Wait(3000, delegate { return guestTransport.Ready; }, hostTransport, guestTransport);
                 bool path = forceRelay || Wait(2500, delegate
                 {
@@ -708,7 +718,7 @@ namespace OriCoop.Relay
                     if (relisten)
                     {
                         relisten = false;
-                        host = new NetPeer(hostTransport);
+                        host = new NetPeer(hostTransport) { TimeoutMs = 5000 };
                         host.Listen();
                     }
                     hostTransport.Update();
@@ -729,7 +739,7 @@ namespace OriCoop.Relay
                         Dispose(guestTransport);
                         guestTransport = RelayTransport.Join(address, code);
                         guestTransport.ForceRelay = forceRelay;
-                        guest = new NetPeer(guestTransport);
+                        guest = new NetPeer(guestTransport) { TimeoutMs = 5000 };
                         guest.Disconnected += guestDisconnected;
                         pendingConnect = true;
                         retryAt = Double.MaxValue;
@@ -810,7 +820,7 @@ namespace OriCoop.Relay
                 EndPoint address = ServerAddress(mainServer);
                 hostTransport = RelayTransport.Host(address);
                 hostTransport.ForceRelay = forceRelay;
-                NetPeer host = new NetPeer(hostTransport);
+                NetPeer host = new NetPeer(hostTransport) { TimeoutMs = 5000 };
                 host.Listen();
                 if (!Wait(3000, delegate { return hostTransport.Ready; }, hostTransport))
                 {
@@ -822,7 +832,7 @@ namespace OriCoop.Relay
                 PumpPeers(3000, host, null);
                 guestTransport = RelayTransport.Join(address, code);
                 guestTransport.ForceRelay = forceRelay;
-                NetPeer guest = new NetPeer(guestTransport);
+                NetPeer guest = new NetPeer(guestTransport) { TimeoutMs = 5000 };
                 bool ready = Wait(3000, delegate { return guestTransport.Ready; }, hostTransport, guestTransport);
                 bool path = forceRelay || Wait(2500, delegate
                 {
@@ -841,7 +851,8 @@ namespace OriCoop.Relay
                     return;
                 }
 
-                // Drop NetPeer packets only. Both relay transports keep updating.
+                // Drop NetPeer packets only. The explicit 5 s timeout fits this 7 s outage;
+                // both relay transports keep updating independently of the NetPeer timeout.
                 host.Sim.LossPercent = 100f;
                 PumpPeers(7000, host, guest);
                 host.Sim.LossPercent = 0f;
@@ -853,7 +864,7 @@ namespace OriCoop.Relay
 
                 // NetPlay reuses the host's room/transport with a fresh listening peer,
                 // but disposes the guest transport and joins again after three seconds.
-                host = new NetPeer(hostTransport);
+                host = new NetPeer(hostTransport) { TimeoutMs = 5000 };
                 host.Listen();
                 int oldGuestPort = guestTransport.LocalPort;
                 guestTransport.Dispose();
@@ -865,7 +876,7 @@ namespace OriCoop.Relay
                 double rejoinStart = NowMs;
                 guestTransport = RelayTransport.Join(address, code);
                 guestTransport.ForceRelay = forceRelay;
-                guest = new NetPeer(guestTransport);
+                guest = new NetPeer(guestTransport) { TimeoutMs = 5000 };
                 bool connectSent = false;
                 while (NowMs - rejoinStart < 10000)
                 {
