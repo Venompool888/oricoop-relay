@@ -9,7 +9,7 @@ clients by a 6-character room code, helps them hole-punch, and relays packets if
 UDP port, default 47020**. It needs no database, no TLS, no domain, no TCP port. It writes a player log (SteamID, IP,
 Steam name), so it handles personal data; see section 7.
 
-Relay protocol **v2** (up to 4 players per room), matching OriCoop release **v0.2.0-2026.11.17** (the same tag exists in the client
+Relay protocol **v2** (up to 4 players per room), matching OriCoop release **v0.2.1-2026.11.18** (the same tag exists in the client
 repo and in oricoop-server). For old 2-player clients (OriCoop 0.2.0, ad8f4bc) deploy tag `v1-oricoop-0.2.0` instead; v1 and v2 do not talk to each other. Check the human's client version first.
 
 ---

@@ -2,7 +2,7 @@
 
 A small UDP relay server for **OriCoop**, a fan-made online co-op mod for *Ori and the Blind Forest: Definitive
 Edition*. Run it on any VPS with a public IPv4 address, give friends its address, and they can play together with a
-6-character room code: no port forwarding on the players' side.
+6-character room code (since v0.2.1-2026.11.18: six digits 2-9, which older clients can still type): no port forwarding on the players' side.
 
 这是 **OriCoop** 联机 mod（《Ori and the Blind Forest: Definitive Edition》的同人联机 mod）用的 UDP 中继服务器。
 放到任何有公网 IPv4 的 VPS 上运行，把地址告诉朋友，就能用 6 位房间码联机，玩家那边不用开端口。
@@ -20,7 +20,7 @@ The server-style C-server (authority / arbitration, 1-4 players) is at
 | | |
 |---|---|
 | Relay protocol / 协议版本 | **v2**: up to 4 players per room (host = seat 1, guests = seats 2-4), seat-routed packets, magic `4F 53`, optional identity block v1. v2 does not talk to v1. / 协议 v2：每房最多 4 人（主机座位 1，客人 2–4），按座位转发；与 v1 不互通 |
-| Matching mod / 对应 mod | OriCoop release **v0.2.0-2026.11.17** (same tag in the client repo and in oricoop-server). For the older 2-player OriCoop 0.2.0 (ad8f4bc), use tag [`v1-oricoop-0.2.0`](https://github.com/Venompool888/oricoop-relay/tree/v1-oricoop-0.2.0). / 对应 OriCoop 发布版 **v0.2.0-2026.11.17**（客户端仓库和 oricoop-server 用同一个标签）；旧的 2 人版 0.2.0（ad8f4bc）请用标签 `v1-oricoop-0.2.0`。 |
+| Matching mod / 对应 mod | OriCoop release **v0.2.1-2026.11.18** (same tag in the client repo and in oricoop-server; v0.2.0-2026.11.17 clients also work). For the older 2-player OriCoop 0.2.0 (ad8f4bc), use tag [`v1-oricoop-0.2.0`](https://github.com/Venompool888/oricoop-relay/tree/v1-oricoop-0.2.0). / 对应 OriCoop 发布版 **v0.2.1-2026.11.18**（客户端仓库和 oricoop-server 用同一个标签；v0.2.0-2026.11.17 的客户端也能用）；旧的 2 人版 0.2.0（ad8f4bc）请用标签 `v1-oricoop-0.2.0`。 |
 | Default port / 默认端口 | **UDP 47020** (TCP not used / 不用 TCP) |
 | Runtime / 运行环境 | .NET 8 (Linux, Docker) or .NET Framework 4.x (Windows `.exe`) |
 | Resources / 资源 | 1 vCPU, 512 MB RAM, about 0.5 Mbit/s per playing pair |
@@ -182,7 +182,7 @@ python3 tools/probe.py <服务器IP或域名> 47020
 
 ### 协议版本
 
-当前是**中继协议 v2**：每个房间最多 4 人（主机 + 最多 3 个客人），对应 OriCoop 发布版 **v0.2.0-2026.11.17**。旧的 2 人版客户端（OriCoop 0.2.0，ad8f4bc）只能连
+当前是**中继协议 v2**：每个房间最多 4 人（主机 + 最多 3 个客人），对应 OriCoop 发布版 **v0.2.1-2026.11.18**。旧的 2 人版客户端（OriCoop 0.2.0，ad8f4bc）只能连
 协议 v1 的服务器，请用标签 `v1-oricoop-0.2.0` 部署。以后服务器和客户端仓库始终同步发布、打同一个标签。
 
 许可证：[MIT](LICENSE)。

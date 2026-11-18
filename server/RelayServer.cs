@@ -49,7 +49,7 @@ namespace OriCoop.Relay
         internal const byte PunchAck = 12;
         internal const byte KeepAliveAck = 13;
         internal const byte LeaveRoom = 14;
-        internal const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        internal const string CodeAlphabet = "23456789";   // T-046: six-digit codes from 2-9 only, so older clients (alphabet A-Z + 2-9) can still type and accept them
     }
 
     // Wire helpers are also used by RelayTest, which builds raw server packets.

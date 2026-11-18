@@ -697,7 +697,9 @@ namespace OriCoop.Relay
                 int rejoins = 0, rejected = 0;
                 host.Disconnected += delegate(string reason)
                 {
-                    hostTimedOut = reason == "timed out";
+                    // The host ends the dead session either by its own timeout or, since T-030, at once when the guest
+                    // reconnects from the same address ("partner reconnected"). Either way it listens again and accepts.
+                    hostTimedOut = reason == "timed out" || reason == "partner reconnected";
                     relisten = true;
                 };
                 Action<string> guestDisconnected = delegate(string reason)
